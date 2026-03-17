@@ -1,0 +1,410 @@
+---
+title: "ND Softball Data"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+jupyter: python3
+kernel: ndsb-travel-stress
+---
+
+## READ IN 2026 DATA
+```{python}
+import requests
+from bs4 import BeautifulSoup
+import re
+link = 'https://fightingirish.com/boxscore/460232/'
+
+link_req = requests.get(link)
+BeautifulSoup(link_req.content)
+```
+
+```{python}
+headers = {
+    'Referer':'https://fightingirish.com/sports/softball/schedule/',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15'
+}
+response = requests.get(link, headers=headers)
+soup = BeautifulSoup(response.text, 'html.parser')
+iframe = soup.select('wmt-stats-iframe')
+iframe_src = iframe[0].get('path')
+iframe_src = re.search(r'\d+', iframe_src)[0]
+
+source_link = f'https://api.wmt.games/api/statistics/games/{iframe_src}?with[0]=actions&with[1]=players&with[2]=plays'
+
+table_req = requests.get(source_link, headers=headers)
+table_req.json()
+```
+
+```{python}
+import requests
+from bs4 import BeautifulSoup
+
+schedule_url = "https://fightingirish.com/sports/softball/schedule/"
+
+headers = {
+    'Referer': schedule_url,
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15'
+}
+
+schedule_req = requests.get(schedule_url, headers=headers)
+soup = BeautifulSoup(schedule_req.text, "html.parser")
+
+links = soup.select("a[href*='/boxscore/']")
+boxscore_urls = ["https://fightingirish.com" + x.get("href") for x in links]
+boxscore_urls = [
+    url.replace("https://fightingirish.comhttps://fightingirish.com",
+                "https://fightingirish.com")
+    for url in boxscore_urls
+]
+
+boxscore_urls[:10], len(boxscore_urls)
+```
+
+```{python}
+def get_boxscore_json(boxscore_url):
+    r = requests.get(boxscore_url, headers=headers)
+    soup = BeautifulSoup(r.text, 'html.parser')
+
+    iframe = soup.select('wmt-stats-iframe')
+    iframe_src = iframe[0].get('path')
+    game_id = re.search(r'\d+', iframe_src)[0]
+
+    api_link = (
+        f'https://api.wmt.games/api/statistics/games/{game_id}'
+        '?with[0]=actions&with[1]=players&with[2]=plays'
+    )
+    j = requests.get(api_link, headers=headers).json()
+
+    # NEW: pull displayed time/date from raw page HTML instead of soup.get_text()
+    html = r.text
+
+    time_match = re.search(r'\b\d{1,2}:\d{2}\s?[ap]m\b', html, re.IGNORECASE)
+    date_match = re.search(r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+[A-Z][a-z]{2}\.?\s+\d{1,2}\s+\(\d{4}\)', html)
+
+    j["page_time"] = time_match.group(0) if time_match else None
+    j["page_date"] = date_match.group(0) if date_match else None
+    j["source_url"] = boxscore_url
+    return j
+```
+
+```{python}
+all_games = []
+
+for url in boxscore_urls:
+    try:
+        game_json = get_boxscore_json(url)
+        game_json["source_url"] = url
+        all_games.append(game_json)
+        print(url)
+    except Exception as e:
+        print("FAILED:", url, e)
+```
+
+## PUT 2026 DATA IN DATAFRAME
+```{python}
+# full df with home games
+import pandas as pd
+rows = []
+
+for game in all_games:
+    game_id = game["data"]["id"]
+    season = game["data"]['season_academic_year']
+    date = game.get("page_date")
+    time = game.get("page_time")
+    time_zone = game["data"]['local_time_zone']
+    neutral_site = game["data"]['neutral_site']
+    team1_home = game['data']['competitors'][0]['homeTeam']
+    team2_home = game['data']['competitors'][1]['homeTeam']
+    team1_name = game['data']['competitors'][0]['nameTabular']
+    team2_name = game['data']['competitors'][1]['nameTabular']
+    team1_score = game['data']['competitors'][0].get('score')
+    team2_score = game['data']['competitors'][1].get('score')
+
+    if team1_score is not None and team2_score is not None:
+     win = (
+        team1_score > team2_score if "Notre Dame" in team1_name
+        else team2_score > team1_score if "Notre Dame" in team2_name
+        else None
+    )
+    else:
+     win = None
+
+    rows.append({
+        "game_id": game_id,
+        'season': season,
+        "date": date,
+        "time": time,
+        'time_zone': time_zone,
+        'neutral': neutral_site,
+        'team1_home': team1_home,
+        'team2_home': team2_home,
+        'team1_name': team1_name,
+        'team2_name': team2_name,
+        'team1_score': team1_score,
+        'team2_score': team2_score,
+        'win': win,
+        "source_url": game["source_url"],
+    })
+
+df1 = pd.DataFrame(rows)
+df1.head(35)
+```
+
+```{python}
+# all nd away games
+rows = []
+
+for game in all_games:
+    game_id = game["data"]["id"]
+    season = game["data"]['season_academic_year']
+    date = game.get("page_date")
+    time = game.get("page_time")
+    time_zone = game["data"]['local_time_zone']
+    neutral_site = game["data"]['neutral_site']
+    team1_home = game['data']['competitors'][0]['homeTeam']
+    team2_home = game['data']['competitors'][1]['homeTeam']
+    team1_name = game['data']['competitors'][0]['nameTabular']
+    team2_name = game['data']['competitors'][1]['nameTabular']
+    team1_score = game['data']['competitors'][0].get('score')
+    team2_score = game['data']['competitors'][1].get('score')
+
+    if team1_score is not None and team2_score is not None:
+     win = (
+        team1_score > team2_score if "Notre Dame" in team1_name
+        else team2_score > team1_score if "Notre Dame" in team2_name
+        else None
+    )
+    else:
+     win = None
+    if (
+    ("Notre Dame" in team1_name and not team1_home) or
+    ("Notre Dame" in team2_name and not team2_home) or
+    (neutral_site and ("Notre Dame" in team1_name or "Notre Dame" in team2_name))
+    ):
+        rows.append({
+            "game_id": game_id,
+            'season': season,
+            "date": date,
+            "time": time,
+            'time_zone': time_zone,
+            'neutral': neutral_site,
+            'team1_home': team1_home,
+            'team2_home': team2_home,
+            'team1_name': team1_name,
+            'team2_name': team2_name,
+            'team1_score': team1_score,
+            'team2_score': team2_score,
+            'win': win,
+            "source_url": game["source_url"],
+        })
+
+df2 = pd.DataFrame(rows)
+df2.head(35)
+```
+
+## ADD TRAVEL LOGISTICS DATA
+```{python}
+excel_path = 'project_data.xlsx'
+df_sb = pd.read_excel(excel_path,sheet_name="NDSB")
+df_sb_travel = df_sb[
+    df_sb['location'].str.strip() != 'South Bend, IN'
+].copy()
+combined = pd.concat([df1, df2], ignore_index=True)
+```
+
+```{python}
+combined['team1_name']=combined['team1_name'].str.upper()
+combined['team2_name']=combined['team2_name'].str.upper()
+```
+
+```{python}
+combined['date'] = pd.to_datetime(combined['date']).dt.date
+df_sb_travel['travel_date'] = pd.to_datetime(df_sb_travel['travel_date']).dt.date
+df_sb_travel['game_date'] = pd.to_datetime(df_sb_travel['game_date']).dt.date
+```
+
+```{python}
+overlap_cols = set(combined.columns).intersection(set(df_sb_travel.columns))
+df_sb_travel_clean = df_sb_travel.drop(columns=overlap_cols)
+
+combined_merged = combined.merge(
+    df_sb_travel_clean,
+    left_on=['date'],
+    right_on=['game_date'],
+    how='left'
+)
+combined = combined_merged.copy()
+combined = combined.drop(columns=['opponent', "trip",'travel_time','connections'])
+combined
+```
+
+## ADD TRAVEL STRESS DATA
+```{python}
+circadian_table = {
+    "time_zones_crossed": {
+        'EST': 0,
+        'CST': 1,
+        'GMT': 5,
+        'MST': 2,
+        "PST": 3,
+        'PDT': 3,
+        'PT': 3
+    },
+    "direction_bonus": {
+        "East": 1,
+        "West": 0
+    }
+}
+```
+
+```{python}
+travel_load_table = {
+    "total_distance": [
+        (0, 150, 0),
+        (150, 600, 1),
+        (600, 1000, 2),
+        (1000, float('inf'), 3)
+    ],
+    "duration": [
+        (0, 180, 0),
+        (180, 360, 1),
+        (360, 540, 2),
+        (540, float('inf'), 3)
+    ]
+}
+```
+
+```{python}
+logistics_table = {
+    "transport": {
+        "Charter Flight": 1,
+        "Home": 0,
+        "Charter Bus": 1,
+        "Commercial Flight": 4
+    }
+}
+```
+
+```{python}
+half_life_table = {
+    "trip_score": [
+        (0, 3, 0.35),
+        (4, 8, 1.0),
+        (9, 16, 1.5),
+        (17, 25, 2.0),
+        (26, float('inf'), 2.5)
+    ]
+}
+```
+
+## GENERATE INSIGHTS FROM TRAVEL STRESS DATA
+```{python}
+import numpy as np
+def compute_circadian_score(df):
+    df["tz_score"] = df["time_zones_crossed"].map(circadian_table["time_zones_crossed"]).fillna(0)
+
+    df["direction_score"] = df["direction"].map(circadian_table["direction_bonus"]).fillna(0)
+
+    df["circadian_score"] = df["tz_score"] + df["direction_score"]
+
+    return df
+```
+
+```{python}
+combined_test = compute_circadian_score(combined.copy())
+print(combined_test[["time_zones_crossed", "direction", "tz_score", "direction_score", "circadian_score"]].head())
+```
+
+```{python}
+def score_from_ranges(value, ranges):
+    for low, high, score in ranges:
+        if low <= value < high:
+            return score
+    return None
+
+def compute_travel_load(df):
+    df["duration_score"] = df["duration"].apply(
+        lambda v: score_from_ranges(v, travel_load_table["duration"])
+    )
+    
+    df["distance_score"] = df["total_distance"].apply(
+        lambda v: score_from_ranges(v, travel_load_table["total_distance"])
+    )
+
+    df["travel_load_score"] = df["duration_score"] + df["distance_score"]
+
+    return df
+```
+
+```{python}
+combined_test = compute_travel_load(combined.copy())
+print(combined_test[["duration", "total_distance", 
+                     "duration_score", "distance_score", 
+                     "travel_load_score"]].head())
+```
+
+```{python}
+def compute_logistics_score(df):
+    df["logistics_score"] = df["transport"].map(logistics_table["transport"]).fillna(0)
+    return df
+```
+
+```{python}
+def score_from_ranges(value, ranges):
+    for low, high, score in ranges:
+        if low <= value <= high:
+            return score
+    return None
+```
+
+```{python}
+# circadian + travel_load + logistics
+def compute_trip_score(df):
+    df["trip_score"] = (
+        df["circadian_score"]
+        + df["travel_load_score"]
+        + df["logistics_score"]
+    )
+    return df
+```
+
+```{python}
+df_test = combined.copy()
+df_test = compute_circadian_score(df_test)
+df_test = compute_travel_load(df_test)
+df_test = compute_logistics_score(df_test)
+df_test = compute_trip_score(df_test)
+
+print(df_test[["circadian_score", "travel_load_score", "logistics_score", "trip_score"]].head())
+```
+
+```{python}
+df_stress = combined.copy()
+df_stress = compute_circadian_score(df_stress)
+df_stress = compute_travel_load(df_stress)
+df_stress = compute_logistics_score(df_stress)
+df_stress = compute_trip_score(df_stress)
+
+stress_output = df_stress[[
+    "circadian_score",
+    "travel_load_score",
+    "logistics_score",
+    "trip_score"
+]]
+
+print(stress_output.head(20))
+```
+
+```{python}
+combined = combined.dropna(subset=['win'])
+combined['win'] = combined['win'].astype(int)
+```
+
+```{python}
+# final dataframe
+for col in stress_output.columns:
+    combined[col] = df_stress[col]
+combined
+```
