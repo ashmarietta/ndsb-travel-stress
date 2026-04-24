@@ -1,26 +1,32 @@
 ---
-title: "ND Softball Data"
+title: "ND Softball Travel Stress Analysis"
 format:
   html:
     toc: true
     toc-location: left
-    self-contained: true
-jupyter: python3
-kernel: ndsb-travel-stress
+    embed-resources: false
+execute:
+  warning: false
+  message: false
+  keep-md: true
+  keep-ipynb: true
+jupyter: student_analyst
 ---
-
-## READ IN 2026 DATA
+# READ IN 2026 DATA FROM ND ATHLETICS WEBSITE
+## USEFUL FOR CROSS-EXAMINING DATA
 ```{python}
+#| output: false
 import requests
 from bs4 import BeautifulSoup
 import re
 link = 'https://fightingirish.com/boxscore/460232/'
 
 link_req = requests.get(link)
-BeautifulSoup(link_req.content)
+BeautifulSoup(link_req.content, 'html.parser')
 ```
 
 ```{python}
+#| output: false
 headers = {
     'Referer':'https://fightingirish.com/sports/softball/schedule/',
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15'
@@ -38,6 +44,7 @@ table_req.json()
 ```
 
 ```{python}
+#| output: false
 import requests
 from bs4 import BeautifulSoup
 
@@ -58,11 +65,11 @@ boxscore_urls = [
                 "https://fightingirish.com")
     for url in boxscore_urls
 ]
-
 boxscore_urls[:10], len(boxscore_urls)
 ```
 
 ```{python}
+#| output: false
 def get_boxscore_json(boxscore_url):
     r = requests.get(boxscore_url, headers=headers)
     soup = BeautifulSoup(r.text, 'html.parser')
@@ -76,8 +83,6 @@ def get_boxscore_json(boxscore_url):
         '?with[0]=actions&with[1]=players&with[2]=plays'
     )
     j = requests.get(api_link, headers=headers).json()
-
-    # NEW: pull displayed time/date from raw page HTML instead of soup.get_text()
     html = r.text
 
     time_match = re.search(r'\b\d{1,2}:\d{2}\s?[ap]m\b', html, re.IGNORECASE)
@@ -90,6 +95,7 @@ def get_boxscore_json(boxscore_url):
 ```
 
 ```{python}
+#| output: false
 all_games = []
 
 for url in boxscore_urls:
@@ -97,21 +103,31 @@ for url in boxscore_urls:
         game_json = get_boxscore_json(url)
         game_json["source_url"] = url
         all_games.append(game_json)
-        print(url)
     except Exception as e:
-        print("FAILED:", url, e)
+        pass
 ```
 
-## PUT 2026 DATA IN DATAFRAME
+# PUT 2026 DATA IN DATAFRAME
 ```{python}
 # full df with home games
 import pandas as pd
+from datetime import datetime
 rows = []
 
 for game in all_games:
     game_id = game["data"]["id"]
     season = game["data"]['season_academic_year']
-    date = game.get("page_date")
+    datestr = game.get("page_date")
+    if datestr:
+        clean_date = (
+            datestr
+            .replace(".", "")
+            .replace("(", "")
+            .replace(")", "")
+        )
+        date = datetime.strptime(clean_date, "%a, %b %d %Y")
+    else:
+        date = None
     time = game.get("page_time")
     time_zone = game["data"]['local_time_zone']
     neutral_site = game["data"]['neutral_site']
@@ -147,9 +163,8 @@ for game in all_games:
         'win': win,
         "source_url": game["source_url"],
     })
-
 df1 = pd.DataFrame(rows)
-df1.head(35)
+df1.head(5)
 ```
 
 ```{python}
@@ -160,6 +175,16 @@ for game in all_games:
     game_id = game["data"]["id"]
     season = game["data"]['season_academic_year']
     date = game.get("page_date")
+    if date:
+        clean_date = (
+            date
+            .replace(".", "")
+            .replace("(", "")
+            .replace(")", "")
+        )
+        date = datetime.strptime(clean_date, "%a, %b %d %Y")
+    else:
+        date = None
     time = game.get("page_time")
     time_zone = game["data"]['local_time_zone']
     neutral_site = game["data"]['neutral_site']
@@ -199,75 +224,46 @@ for game in all_games:
             'win': win,
             "source_url": game["source_url"],
         })
-
 df2 = pd.DataFrame(rows)
-df2.head(35)
+df2.head(5)
 ```
 
-## ADD TRAVEL LOGISTICS DATA
+## IMPORT TRAVEL LOGISTICS DATA
 ```{python}
 excel_path = 'project_data.xlsx'
 df_sb = pd.read_excel(excel_path,sheet_name="NDSB")
 df_sb_travel = df_sb[
     df_sb['location'].str.strip() != 'South Bend, IN'
 ].copy()
-combined = pd.concat([df1, df2], ignore_index=True)
 ```
 
-```{python}
-combined['team1_name']=combined['team1_name'].str.upper()
-combined['team2_name']=combined['team2_name'].str.upper()
-```
-
-```{python}
-combined['date'] = pd.to_datetime(combined['date']).dt.date
-df_sb_travel['travel_date'] = pd.to_datetime(df_sb_travel['travel_date']).dt.date
-df_sb_travel['game_date'] = pd.to_datetime(df_sb_travel['game_date']).dt.date
-```
-
-```{python}
-overlap_cols = set(combined.columns).intersection(set(df_sb_travel.columns))
-df_sb_travel_clean = df_sb_travel.drop(columns=overlap_cols)
-
-combined_merged = combined.merge(
-    df_sb_travel_clean,
-    left_on=['date'],
-    right_on=['game_date'],
-    how='left'
-)
-combined = combined_merged.copy()
-combined = combined.drop(columns=['opponent', "trip",'travel_time','connections'])
-combined
-```
-
-## ADD TRAVEL STRESS DATA
+# ADD TRAVEL STRESS FUNCTION DATA
 ```{python}
 circadian_table = {
     "time_zones_crossed": {
-        'EST': 0,
-        'CST': 1,
-        'GMT': 5,
-        'MST': 2,
-        "PST": 3,
-        'PDT': 3,
-        'PT': 3
+        0: 0,
+        1: 1,
+        5: 5,
+        2: 2,
+        3: 3,
+        4: 4,
     },
     "direction_bonus": {
-        "East": 1,
-        "West": 0
+        "E": 1,
+        "W": 0
     }
 }
 ```
 
 ```{python}
 travel_load_table = {
-    "total_distance": [
+    "total_distance_from_home": [
         (0, 150, 0),
         (150, 600, 1),
         (600, 1000, 2),
         (1000, float('inf'), 3)
     ],
-    "duration": [
+    "travel_time": [
         (0, 180, 0),
         (180, 360, 1),
         (360, 540, 2),
@@ -278,43 +274,99 @@ travel_load_table = {
 
 ```{python}
 logistics_table = {
-    "transport": {
-        "Charter Flight": 1,
-        "Home": 0,
-        "Charter Bus": 1,
-        "Commercial Flight": 4
-    }
+    "transport_there": {
+        "charter flight": 1,
+        "home": 0,
+        "charter bus": 1,
+        "commercial": 4
+    },
+    "trip_length": [
+        (0, 1, 0),
+        (1, 2, 1),
+        (2, 4, 2),
+        (4, float("inf"), 3)
+    ]
 }
+```
+
+```{python}
+import datetime
+density_table = {
+    "turnaround_time": [
+        (7, float('inf'), 0),
+        (4, 7,            1),
+        (2, 4,            2),
+        (0, 2,            3)
+    ],
+    "return_time": [
+        (0,    1380, 0),
+        (1380, 1470, 1),
+        (1470, 1590, 2),
+        (1590, float('inf'), 3)
+    ]
+}
+
+# treat 11:00 a.m. as post-midnight for return time scoring since it likely indicates a late-night return that disrupts sleep more than an early-morning return
+def normalize_return_time(t):
+    if t is None:
+        return None
+    if isinstance(t, datetime.time):
+        h, m = t.hour, t.minute
+    else:
+        parsed = pd.to_datetime(t, format="%I:%M:%S %p", errors="coerce")
+        if pd.isna(parsed):
+            return None
+        h, m = parsed.hour, parsed.minute
+    h = h + (24 if h < 11 else 0)
+    return h * 60 + m
+
+def density_score_for_value(key, value):
+    if value is None:
+        return None
+    if key == "return_time":
+        value = normalize_return_time(value)
+        if value is None:
+            return None
+    for low, high, score in density_table[key]:
+        if low <= value < high:
+            return score
+    return None
+
+def compute_density_score(df_sb_travel):
+    df_sb_travel["travel_density_score"] = (
+        df_sb_travel["return_time"].apply(lambda x: density_score_for_value("return_time", x))
+        + df_sb_travel["turnaround_time"].apply(lambda x: density_score_for_value("turnaround_time", x))
+    )
+    return df_sb_travel
 ```
 
 ```{python}
 half_life_table = {
     "trip_score": [
-        (0, 3, 0.35),
-        (4, 8, 1.0),
-        (9, 16, 1.5),
-        (17, 25, 2.0),
-        (26, float('inf'), 2.5)
+        (0,  6,            0.35),
+        (6,  11,           1.0),
+        (11, 19,           1.5),
+        (19, 28,           2.0),
+        (28, float('inf'), 2.5)
     ]
 }
 ```
 
-## GENERATE INSIGHTS FROM TRAVEL STRESS DATA
+# GENERATE SCORES FROM TRAVEL STRESS DATA
 ```{python}
 import numpy as np
-def compute_circadian_score(df):
-    df["tz_score"] = df["time_zones_crossed"].map(circadian_table["time_zones_crossed"]).fillna(0)
+def compute_circadian_score(df_sb_travel):
+    df_sb_travel["tz_score"] = df_sb_travel["time_zones_crossed"].map(circadian_table["time_zones_crossed"]).fillna(0)
 
-    df["direction_score"] = df["direction"].map(circadian_table["direction_bonus"]).fillna(0)
+    df_sb_travel["direction_score"] = df_sb_travel["direction"].map(circadian_table["direction_bonus"]).fillna(0)
 
-    df["circadian_score"] = df["tz_score"] + df["direction_score"]
-
-    return df
+    df_sb_travel["circadian_score"] = df_sb_travel["tz_score"] + df_sb_travel["direction_score"]
+    return df_sb_travel
 ```
 
 ```{python}
-combined_test = compute_circadian_score(combined.copy())
-print(combined_test[["time_zones_crossed", "direction", "tz_score", "direction_score", "circadian_score"]].head())
+combined_test = compute_circadian_score(df_sb_travel.copy())
+print(combined_test[["time_zones_crossed", "direction", "tz_score", "direction_score", "circadian_score"]].head(5))
 ```
 
 ```{python}
@@ -324,87 +376,1261 @@ def score_from_ranges(value, ranges):
             return score
     return None
 
-def compute_travel_load(df):
-    df["duration_score"] = df["duration"].apply(
-        lambda v: score_from_ranges(v, travel_load_table["duration"])
+def compute_travel_load(df_sb_travel):
+    df_sb_travel["duration_score"] = df_sb_travel["travel_time"].apply(
+        lambda v: score_from_ranges(v, travel_load_table["travel_time"])
     )
     
-    df["distance_score"] = df["total_distance"].apply(
-        lambda v: score_from_ranges(v, travel_load_table["total_distance"])
+    df_sb_travel["distance_score"] = df_sb_travel["total_distance_from_home"].apply(
+        lambda v: score_from_ranges(v, travel_load_table["total_distance_from_home"])
     )
 
-    df["travel_load_score"] = df["duration_score"] + df["distance_score"]
-
-    return df
+    df_sb_travel["travel_load_score"] = df_sb_travel["duration_score"] + df_sb_travel["distance_score"]
+    return df_sb_travel
 ```
 
 ```{python}
-combined_test = compute_travel_load(combined.copy())
-print(combined_test[["duration", "total_distance", 
-                     "duration_score", "distance_score", 
-                     "travel_load_score"]].head())
+combined_test = compute_circadian_score(df_sb_travel.copy())
+combined_test = compute_travel_load(combined_test)
 ```
 
 ```{python}
 def compute_logistics_score(df):
-    df["logistics_score"] = df["transport"].map(logistics_table["transport"]).fillna(0)
+    df["transport_score"] = df["transport_there"].map(logistics_table["transport_there"]).fillna(0)
+    df["trip_length_score"] = df["trip_length"].apply(
+        lambda v: score_from_ranges(v, logistics_table["trip_length"])
+    )
+    df["logistics_score"] = df["transport_score"] + df["trip_length_score"].fillna(0)
     return df
 ```
 
 ```{python}
-def score_from_ranges(value, ranges):
-    for low, high, score in ranges:
-        if low <= value <= high:
-            return score
-    return None
+df_sb_travel = compute_density_score(df_sb_travel)
 ```
 
 ```{python}
 # circadian + travel_load + logistics
 def compute_trip_score(df):
-    df["trip_score"] = (
-        df["circadian_score"]
-        + df["travel_load_score"]
-        + df["logistics_score"]
+    df["trip_score"] = df[[
+        "circadian_score",
+        "travel_load_score",
+        "logistics_score",
+        "travel_density_score"
+    ]].fillna(0).sum(axis=1)
+    return df
+```
+
+```{python}
+def half_life_from_trip_score(value):
+    for low, high, half_life_days in half_life_table["trip_score"]:
+        if low <= value < high:
+            return half_life_days
+    return np.nan
+
+def compute_residual_decay(df):
+    if "turnaround_time" not in df.columns:
+        raise KeyError("Missing required column: turnaround_time")
+
+    df["half_life_days"] = df["trip_score"].apply(half_life_from_trip_score)
+    df["residual"] = df["trip_score"] * np.exp(
+        -np.log(2) * df["turnaround_time"] / df["half_life_days"]
     )
     return df
 ```
 
 ```{python}
-df_test = combined.copy()
-df_test = compute_circadian_score(df_test)
-df_test = compute_travel_load(df_test)
-df_test = compute_logistics_score(df_test)
-df_test = compute_trip_score(df_test)
+def compute_rtl(df):
+    df = df.copy()
+    df["travel_date_home"] = pd.to_datetime(df["travel_date_home"])
 
-print(df_test[["circadian_score", "travel_load_score", "logistics_score", "trip_score"]].head())
+    start = df["travel_date_home"].min()
+    end   = df["travel_date_home"].max() + pd.Timedelta(days=30)
+    dates = pd.date_range(start, end, freq="D")
+
+    rtl_rows = []
+    for day in dates:
+        active = df[df["travel_date_home"] <= day].copy()
+        if active.empty:
+            rtl_rows.append({"game_date": day, "rtl": 0.0})
+            continue
+
+        active["delta_days"] = (day - active["travel_date_home"]).dt.days
+        active["daily_residual"] = active["trip_score"] * np.exp(
+            -np.log(2) * active["delta_days"] / active["half_life_days"]
+        )
+        rtl_rows.append({"game_date": day, "rtl": active["daily_residual"].sum()})
+
+    return pd.DataFrame(rtl_rows)
+
+def compute_crtl(rtl_df):
+    rtl_df = rtl_df.copy()
+    rtl_df["crtl"] = rtl_df["rtl"].cumsum()
+    return rtl_df
 ```
 
 ```{python}
-df_stress = combined.copy()
-df_stress = compute_circadian_score(df_stress)
-df_stress = compute_travel_load(df_stress)
-df_stress = compute_logistics_score(df_stress)
-df_stress = compute_trip_score(df_stress)
+final_df = df_sb_travel.copy()
+final_df = compute_circadian_score(final_df)
+final_df = compute_travel_load(final_df)
+final_df = compute_logistics_score(final_df)
+final_df = compute_density_score(final_df)
+final_df = compute_trip_score(final_df)
+final_df = compute_residual_decay(final_df) 
+daily_df = compute_rtl(final_df)
+daily_df = compute_crtl(daily_df)
+```
 
-stress_output = df_stress[[
+```{python}
+# make variables binary
+final_df["commercial_flight_there"] = (final_df["transport_there"] == "commercial").astype(int)
+
+final_df["commercial_flight_home"] = (final_df["transport_back"] == "commercial").astype(int)
+```
+
+```{python}
+final_df["travel_date_home"] = pd.to_datetime(final_df["travel_date_home"])
+
+final_output = final_df[[
+    "travel_date_home", "travel_time", "total_distance_from_home",
+    "time_zones_crossed",
+    "connections", 
+    "return_time",
+    "commercial_flight_there","commercial_flight_home",
+    "practice_at_away_site",
     "circadian_score",
     "travel_load_score",
     "logistics_score",
-    "trip_score"
-]]
+    "travel_density_score",
+    "trip_score",
+    "half_life_days",
+    "residual",
+    "turnaround_time"
+]].merge(daily_df[["game_date", "rtl", "crtl"]], 
+         left_on="travel_date_home", 
+         right_on="game_date", 
+         how="left").drop(columns="game_date")
+final_output.head(5)
+```
 
-print(stress_output.head(20))
+# ASSIGN VALUES TO RTL AND CRTL
+```{python}
+def assign_rtl_category(value):
+    if pd.isna(value):
+        return np.nan
+    if value < 4:
+        return "Minimal"
+    if value <= 9:
+        return "Low"
+    if value <= 18:
+        return "Moderate"
+    if value < 30:
+        return "High"
+    return "Very High"
+
+def assign_crtl_category(value):
+    if pd.isna(value):
+        return np.nan
+    if value < 120:
+        return "Minimal"
+    if value <= 240:
+        return "Low"
+    if value <= 380:
+        return "Moderate"
+    if value <= 550:
+        return "High"
+    return "Very High"
+
+daily_df["rtl_category"] = daily_df["rtl"].apply(assign_rtl_category)
+daily_df["crtl_category"] = daily_df["crtl"].apply(assign_crtl_category)
+
+final_output["rtl_category"] = final_output["rtl"].apply(assign_rtl_category)
+final_output["crtl_category"] = final_output["crtl"].apply(assign_crtl_category)
+```
+
+# ADD IN FORCE PLATE JUMP DATA
+```{python}
+excel = 'softball_jumps.xlsx'
+df_sbj = pd.read_excel(excel,sheet_name="softball_jumps")
+df_sb_jumps = df_sbj.copy()
 ```
 
 ```{python}
-combined = combined.dropna(subset=['win'])
-combined['win'] = combined['win'].astype(int)
+current_jump_df = (
+    df_sb_jumps.loc[df_sb_jumps["IS_ACTIVE"] == 1, ["SPID", "DATE_NAME", "PEAK_POWER", "Z_SCORE_PEAK_POWER"]]
+    .rename(
+        columns={
+            "SPID": "athlete_id",
+            "DATE_NAME": "date_jump",
+            "PEAK_POWER": "peak_power",
+            "Z_SCORE_PEAK_POWER": "zscore_peak_power"
+        }
+    )
+    .copy()
+)
+
+current_jump_df["date_jump"] = pd.to_datetime(current_jump_df["date_jump"], errors="coerce")
+
+# keep the full academic-year response window so fall data is available for cluster formation
+start_date = pd.Timestamp("2025-08-01")
+current_jump_df = current_jump_df[
+    current_jump_df["date_jump"].between(start_date, pd.Timestamp.today().normalize())
+].copy()
 ```
 
 ```{python}
-# final dataframe
-for col in stress_output.columns:
-    combined[col] = df_stress[col]
-combined
+current_jump_df = current_jump_df[["athlete_id", "date_jump", "peak_power", "zscore_peak_power"]].copy()
+
+current_jump_df = pd.merge_asof(
+    current_jump_df.sort_values("date_jump"),
+    final_output[[
+        "travel_date_home",
+        "travel_time",
+        "total_distance_from_home",
+        "connections",
+        "commercial_flight_there",
+        "commercial_flight_home",
+        "return_time",
+        "turnaround_time",
+        "rtl",
+        "crtl",
+        "trip_score",
+        "practice_at_away_site",
+        "residual",
+        "half_life_days",
+        "circadian_score",
+        "travel_load_score",
+        "logistics_score",
+        "travel_density_score"
+    ]]
+    .assign(travel_date_home=lambda df: pd.to_datetime(df["travel_date_home"], errors="coerce"))
+    .sort_values("travel_date_home"),
+    left_on="date_jump",
+    right_on="travel_date_home",
+    direction="backward", tolerance=pd.Timedelta(days=7)
+)
+current_jump_df.tail(5)
+```
+
+# MAKE INTRO VISUALIZATIONS FOR RTL AND CRTL
+## SIMPLY FOR DATA EXPLORATION, NOT MODELING
+```{python}
+import matplotlib.pyplot as plt
+
+season_plot_df = daily_df.copy()
+season_plot_df["game_date"] = pd.to_datetime(season_plot_df["game_date"], errors="coerce")
+season_plot_df = season_plot_df.sort_values("game_date")
+
+fig, ax1 = plt.subplots(figsize=(14, 6))
+
+ax1.bar(
+    season_plot_df["game_date"],
+    season_plot_df["rtl"],
+    color="#4C78A8",
+    alpha=0.75,
+    label="RTL"
+)
+ax1.set_ylabel("Daily Residual Travel Load (RTL)", color="#4C78A8")
+ax1.tick_params(axis="y", labelcolor="#4C78A8")
+
+ax2 = ax1.twinx()
+ax2.plot(
+    season_plot_df["game_date"],
+    season_plot_df["crtl"],
+    color="#F58518",
+    linewidth=2.5,
+    label="CRTL"
+)
+ax2.set_ylabel("Seasonal Cumulative Travel Load (CRTL)", color="#F58518")
+ax2.tick_params(axis="y", labelcolor="#F58518")
+
+ax1.set_title("RTL and CRTL Across the Season")
+ax1.set_xlabel("Date")
+ax1.grid(axis="y", alpha=0.25)
+
+lines_1, labels_1 = ax1.get_legend_handles_labels()
+lines_2, labels_2 = ax2.get_legend_handles_labels()
+ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper left")
+
+fig.autofmt_xdate()
+plt.tight_layout()
+plt.show()
+```
+
+This visualization shows the progressive RTL and CRTL values across the season, with bars representing daily RTL and a line for cumulative CRTL. One can see how travel stress accumulates over time and identify any peaks that may correspond to demanding travel trips.
+
+```{python}
+jump_daily = (
+    current_jump_df.dropna(subset=["date_jump", "peak_power"])
+    .groupby("date_jump", as_index=False)
+    .agg(
+        avg_peak_power=("peak_power", "mean"),
+        avg_zscore_peak_power=("zscore_peak_power", "mean"),
+        crtl=("crtl", "first")
+    )
+    .sort_values("date_jump")
+)
+
+fig, ax1 = plt.subplots(figsize=(12, 5))
+
+ax1.plot(
+    jump_daily["date_jump"],
+    jump_daily["avg_peak_power"],
+    color="#2A9D8F",
+    marker="o",
+    linewidth=2,
+    label="Avg Peak Power"
+)
+ax1.set_ylabel("Average Peak Power", color="#2A9D8F")
+ax1.tick_params(axis="y", labelcolor="#2A9D8F")
+
+ax2 = ax1.twinx()
+ax2.plot(
+    jump_daily["date_jump"],
+    jump_daily["crtl"],
+    color="#E76F51",
+    marker="s",
+    linewidth=2,
+    label="CRTL"
+)
+ax2.set_ylabel("CRTL", color="#E76F51")
+ax2.tick_params(axis="y", labelcolor="#E76F51")
+
+ax1.set_title("Average Jump Peak Power vs. CRTL by Jump Date")
+ax1.set_xlabel("Jump Date")
+ax1.grid(axis="y", alpha=0.2)
+
+lines_1, labels_1 = ax1.get_legend_handles_labels()
+lines_2, labels_2 = ax2.get_legend_handles_labels()
+ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper left")
+
+fig.autofmt_xdate()
+plt.tight_layout()
+plt.show()
+```
+
+This visualization shows the relationship between average jump peak power and CRTL on the date of the jump (through April 21, 2026), allowing analysis on if there are any trends or correlations between travel load and jump performance. For example, if there is a correlation between higher CRTL values and lower average peak power, it may suggest that accumulated travel stress is negatively impacting jump performance. However, if there is no relationship, it may indicate that other factors are more influential on jump performance than travel load.
+
+# CREATE DATAFRAME AND SPLIT DATA FOR CLUSTERING
+```{python}
+current_jump_df = current_jump_df.sort_values(["athlete_id", "date_jump"]).copy()
+```
+
+```{python}
+# fix all dates
+current_jump_df["travel_date_home"] = pd.to_datetime(current_jump_df["travel_date_home"], errors="coerce")
+
+current_jump_df["date_jump"] = pd.to_datetime(current_jump_df["date_jump"], errors="coerce")
+
+current_jump_df["days_since_travel"] = (current_jump_df["date_jump"] - current_jump_df["travel_date_home"]).dt.days
+```
+
+```{python}
+# keep only jumps within 0-7 days after travel for travel-response modeling
+current_jump_df.loc[
+    (current_jump_df["days_since_travel"].isna()) |
+    (current_jump_df["days_since_travel"] < 0) |
+    (current_jump_df["days_since_travel"] > 7),
+    [   "travel_date_home",
+        "travel_time",
+        "total_distance_from_home",
+        "connections",
+        "commercial_flight_there",
+        "commercial_flight_home",
+        "practice_at_away_site",
+        "return_time",
+        "turnaround_time",
+        "rtl",
+        "crtl",
+        "trip_score",
+        "residual",
+        "half_life_days",
+        "circadian_score",
+        "travel_load_score",
+        "logistics_score",
+        "travel_density_score",
+        "days_since_travel"]
+] = np.nan
+```
+
+```{python}
+# temporal split with fall/pre-season for cluster formation and spring only for prediction
+# here, fall always means pre-season (from the first day of training until the first travel trip)
+pre_start = pd.Timestamp("2025-08-01")
+pre_end = pd.Timestamp("2026-02-04")
+spring_start = pd.Timestamp("2026-02-05")
+spring_end = pd.Timestamp.today().normalize()
+
+# fall jumps used only to define baseline
+pre_jump_df = current_jump_df[
+    current_jump_df["date_jump"].between(pre_start, pre_end)
+].copy()
+
+# spring jumps are the actual modeling observations
+spring_jump_df = current_jump_df[
+    current_jump_df["date_jump"].between(spring_start, spring_end)
+].copy()
+
+print("pre_jump_df:", pre_jump_df.shape)
+print("spring_jump_df:", spring_jump_df.shape)
+```
+
+# CALCULATE ATHLETE-SPECIFIC FALL BASELINE AND SPRING DEVIATION FROM BASELINE
+```{python}
+# athlete-specific fall baseline from raw peak power
+pre_baseline_df = (
+    pre_jump_df
+    .groupby("athlete_id", as_index=False)
+    .agg(
+        pre_peak_power_mean=("peak_power", "mean"),
+        pre_peak_power_std=("peak_power", "std"),
+        n_pre_jumps=("peak_power", "count"))
+)
+
+pre_baseline_df["pre_peak_power_std"] = pre_baseline_df["pre_peak_power_std"].replace(0, np.nan)
+```
+
+```{python}
+# spring modeling rows with fall baseline merged in for z-score calculation
+spring_cbase = spring_jump_df.merge(
+    pre_baseline_df,
+    on="athlete_id",
+    how="left"
+).copy()
+
+# keep only athletes with enough fall baseline info
+spring_cbase = spring_cbase[
+    (spring_cbase["n_pre_jumps"] >= 3) &
+    (spring_cbase["pre_peak_power_std"].notna())
+].copy()
+
+# rebuild z-score relative to the athlete's fall baseline
+spring_cbase["zscore_peak_power"] = (
+    (spring_cbase["peak_power"] - spring_cbase["pre_peak_power_mean"]) /
+    spring_cbase["pre_peak_power_std"])
+
+# spring deviation from baseline where target is change from fall baseline
+spring_cbase["pctchange_peak_power"] = (
+    (spring_cbase["peak_power"] - spring_cbase["pre_peak_power_mean"]) /
+    spring_cbase["pre_peak_power_mean"]
+) * 100
+```
+
+```{python}
+# derived features for modeling
+spring_cbase["below_baseline"] = (spring_cbase["zscore_peak_power"] < 0).astype(int)
+spring_cbase["low_jump_flag"] = (spring_cbase["zscore_peak_power"] <= -0.5).astype(int)
+
+spring_cbase["negative_zscore"] = np.where(
+    spring_cbase["zscore_peak_power"] < 0,
+    spring_cbase["zscore_peak_power"],
+    np.nan
+)
+
+spring_cbase["posttravel_0to2"] = spring_cbase["days_since_travel"].between(0, 2, inclusive="both").astype(int)
+spring_cbase["posttravel_3to5"] = spring_cbase["days_since_travel"].between(3, 5, inclusive="both").astype(int)
+spring_cbase["posttravel_6to7"] = spring_cbase["days_since_travel"].between(6, 7, inclusive="both").astype(int)
+
+rtl_cut = spring_cbase["rtl"].median()
+crtl_cut = spring_cbase["crtl"].median()
+trip_cut = spring_cbase["trip_score"].median()
+
+spring_cbase["high_rtl_flag"] = (spring_cbase["rtl"] > rtl_cut).astype(int)
+spring_cbase["high_crtl_flag"] = (spring_cbase["crtl"] > crtl_cut).astype(int)
+spring_cbase["high_trip_score_flag"] = (spring_cbase["trip_score"] > trip_cut).astype(int)
+```
+
+# BUILD BASELINE PREDICTIVE MODEL WITH RTL AND CRTL
+```{python}
+# baseline predictive model with leave-one-athlete-out cross-validation to predict zscore_peak_power using rtl/crtl
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import LeaveOneGroupOut
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+rf_model_vars = [
+    "rtl",
+    "crtl",
+    "trip_score",
+    "residual",
+    "half_life_days",
+    "travel_time",
+    "total_distance_from_home",
+    "connections",
+    "commercial_flight_there",
+    "commercial_flight_home",
+    "practice_at_away_site",
+    "turnaround_time",
+    "circadian_score",
+    "travel_load_score",
+    "logistics_score",
+    "travel_density_score",
+    "days_since_travel"
+]
+
+rf_model_df = spring_cbase[
+    ["athlete_id", "date_jump", "zscore_peak_power", "peak_power"] + rf_model_vars
+].copy()
+
+# keep rows with a valid spring target
+rf_model_df = rf_model_df[rf_model_df["zscore_peak_power"].notna()].copy()
+
+# fill predictors with zeros
+for col in rf_model_vars:
+    rf_model_df[col] = rf_model_df[col].replace([np.inf, -np.inf], np.nan)
+    rf_model_df[col] = rf_model_df[col].fillna(0)
+
+rf_model_df[rf_model_vars] = rf_model_df[rf_model_vars].fillna(0)
+
+X_rf = rf_model_df[rf_model_vars]
+y_rf = rf_model_df["zscore_peak_power"]
+rf_groups = rf_model_df["athlete_id"]
+
+rf_logo = LeaveOneGroupOut()
+
+rf_pred_rows = []
+
+for train_idx, test_idx in rf_logo.split(X_rf, y_rf, groups=rf_groups):
+    X_train = X_rf.iloc[train_idx]
+    X_test = X_rf.iloc[test_idx]
+    y_train = y_rf.iloc[train_idx]
+    y_test = y_rf.iloc[test_idx]
+
+    rf_model = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=5,
+        min_samples_leaf=2,
+        random_state=42
+    )
+
+    rf_model.fit(X_train, y_train)
+    y_pred = rf_model.predict(X_test)
+
+    fold_df = rf_model_df.iloc[test_idx][["athlete_id", "date_jump", "zscore_peak_power", "peak_power"]].copy()
+    fold_df["pred_zscore_peak_power"] = y_pred
+    rf_pred_rows.append(fold_df)
+
+rf_pred_results = pd.concat(rf_pred_rows, ignore_index=True)
+
+rmse_rf = np.sqrt(mean_squared_error(rf_pred_results["zscore_peak_power"], rf_pred_results["pred_zscore_peak_power"]))
+mae_rf = mean_absolute_error(rf_pred_results["zscore_peak_power"], rf_pred_results["pred_zscore_peak_power"])
+r2_rf = r2_score(rf_pred_results["zscore_peak_power"], rf_pred_results["pred_zscore_peak_power"])
+
+print("LOAO RMSE:", round(rmse_rf, 3))
+print("LOAO MAE:", round(mae_rf, 3))
+print("LOAO R^2:", round(r2_rf, 3))
+rf_pred_results.head(5)
+```
+
+```{python}
+# fit one model for variable importance
+rf_model_final = RandomForestRegressor(
+    n_estimators=300,
+    max_depth=5,
+    min_samples_leaf=2,
+    random_state=42)
+
+rf_model_final.fit(X_rf, y_rf)
+
+importance_df = pd.DataFrame({
+    "variable": rf_model_vars,
+    "importance": rf_model_final.feature_importances_
+}).sort_values("importance", ascending=False)
+importance_df.head(15)
+```
+
+# BUILD BASELINE PREDICTIVE MODEL WITHOUT RTL AND CRTL
+```{python}
+# baseline predictive model without rtl/crtl
+rf_model_vars_no_rtl = [
+    "trip_score",
+    "residual",
+    "half_life_days",
+    "travel_time",
+    "total_distance_from_home",
+    "connections",
+    "commercial_flight_there",
+    "commercial_flight_home",
+    "practice_at_away_site",
+    "turnaround_time",
+    "circadian_score",
+    "travel_load_score",
+    "logistics_score",
+    "travel_density_score",
+    "days_since_travel"
+]
+
+rf_model_df_no_rtl = spring_cbase[
+    ["athlete_id", "date_jump", "zscore_peak_power", "peak_power"] + rf_model_vars_no_rtl
+].copy()
+
+# keep rows with a valid spring target
+rf_model_df_no_rtl = rf_model_df_no_rtl[rf_model_df_no_rtl["zscore_peak_power"].notna()].copy()
+
+# fill predictors with zeros
+for col in rf_model_vars_no_rtl:
+    rf_model_df_no_rtl[col] = rf_model_df_no_rtl[col].replace([np.inf, -np.inf], np.nan)
+    rf_model_df_no_rtl[col] = rf_model_df_no_rtl[col].fillna(0)
+
+rf_model_df_no_rtl[rf_model_vars_no_rtl] = rf_model_df_no_rtl[rf_model_vars_no_rtl].fillna(0)
+
+X_rf_no_rtl = rf_model_df_no_rtl[rf_model_vars_no_rtl]
+y_rf_no_rtl = rf_model_df_no_rtl["zscore_peak_power"]
+rf_groups_no_rtl = rf_model_df_no_rtl["athlete_id"]
+
+rf_logo_no_rtl = LeaveOneGroupOut()
+
+rf_pred_rows_no_rtl = []
+
+for train_idx, test_idx in rf_logo_no_rtl.split(X_rf_no_rtl, y_rf_no_rtl, groups=rf_groups_no_rtl):
+    X_train_no_rtl = X_rf_no_rtl.iloc[train_idx]
+    X_test_no_rtl = X_rf_no_rtl.iloc[test_idx]
+    y_train_no_rtl = y_rf_no_rtl.iloc[train_idx]
+    y_test_no_rtl = y_rf_no_rtl.iloc[test_idx]
+
+    rf_model_no_rtl = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=5,
+        min_samples_leaf=2,
+        random_state=42
+    )
+
+    rf_model_no_rtl.fit(X_train_no_rtl, y_train_no_rtl)
+    y_pred_no_rtl = rf_model_no_rtl.predict(X_test_no_rtl)
+
+    fold_df_no_rtl = rf_model_df_no_rtl.iloc[test_idx][["athlete_id", "date_jump", "zscore_peak_power", "peak_power"]].copy()
+    fold_df_no_rtl["pred_zscore_peak_power"] = y_pred_no_rtl
+    rf_pred_rows_no_rtl.append(fold_df_no_rtl)
+
+rf_pred_results_no_rtl = pd.concat(rf_pred_rows_no_rtl, ignore_index=True)
+
+rmse_rf_no_rtl = np.sqrt(mean_squared_error(rf_pred_results_no_rtl["zscore_peak_power"], rf_pred_results_no_rtl["pred_zscore_peak_power"]))
+mae_rf_no_rtl = mean_absolute_error(rf_pred_results_no_rtl["zscore_peak_power"], rf_pred_results_no_rtl["pred_zscore_peak_power"])
+r2_rf_no_rtl = r2_score(rf_pred_results_no_rtl["zscore_peak_power"], rf_pred_results_no_rtl["pred_zscore_peak_power"])
+
+print("LOAO RMSE (no RTL/CRTL):", round(rmse_rf_no_rtl, 3))
+print("LOAO MAE (no RTL/CRTL):", round(mae_rf_no_rtl, 3))
+print("LOAO R^2 (no RTL/CRTL):", round(r2_rf_no_rtl, 3))
+rf_pred_results_no_rtl.head(5)
+```
+
+```{python}
+# fit one model for variable importance
+rf_model_final_no_rtl = RandomForestRegressor(
+    n_estimators=300,
+    max_depth=5,
+    min_samples_leaf=2,
+    random_state=42)
+
+rf_model_final_no_rtl.fit(X_rf_no_rtl, y_rf_no_rtl)
+
+importance_df_no_rtl = pd.DataFrame({
+    "variable": rf_model_vars_no_rtl,
+    "importance": rf_model_final_no_rtl.feature_importances_
+}).sort_values("importance", ascending=False)
+importance_df_no_rtl.head(15)
+```
+
+The model without RTL and CRTL performed similarly to the model with them, suggesting that they add limited predictive value beyond the other travel features.
+
+# BUILD ATHLETE-LEVEL RESPONSE FEATURES FOR CLUSTERING
+```{python}
+# create derived variables
+response_rows = []
+for athlete_id, a in spring_cbase.groupby("athlete_id"):
+    a = a.sort_values("date_jump").copy()
+
+    row = {"athlete_id": athlete_id}
+
+    row["n_jumps"] = len(a)
+    row["avg_zscore_peak_power"] = a["zscore_peak_power"].mean()
+    row["std_zscore_peak_power"] = a["zscore_peak_power"].std()
+    row["min_zscore_peak_power"] = a["zscore_peak_power"].min()
+    row["range_peak_power_z"] = a["zscore_peak_power"].max() - a["zscore_peak_power"].min()
+
+    row["pct_jumps_below_baseline"] = (a["zscore_peak_power"] < 0).mean()
+    row["pct_low_jump_days"] = (a["zscore_peak_power"] <= -0.5).mean()
+
+    row["avg_peak_power_z_0to2_days"] = a.loc[a["posttravel_0to2"] == 1, "zscore_peak_power"].mean()
+    row["avg_peak_power_z_3to5_days"] = a.loc[a["posttravel_3to5"] == 1, "zscore_peak_power"].mean()
+    row["avg_peak_power_z_6to7_days"] = a.loc[a["posttravel_6to7"] == 1, "zscore_peak_power"].mean()
+
+    #row["zscore_peak_power_rtl"] = a["zscore_peak_power"].corr(a["rtl"])
+    #row["zscore_peak_power_crtl"] = a["zscore_peak_power"].corr(a["crtl"])
+    row["zscore_peak_power_trip_score"] = a["zscore_peak_power"].corr(a["trip_score"])
+    row["zscore_peak_power_residual"] = a["zscore_peak_power"].corr(a["residual"])
+
+    row["avg_rtl"] = a["rtl"].mean()
+    row["avg_crtl"] = a["crtl"].mean()
+    row["avg_trip_score"] = a["trip_score"].mean()
+    row["avg_residual"] = a["residual"].mean()
+    row["avg_turnaround_time"] = a["turnaround_time"].mean()
+    row["avg_half_life_days"] = a["half_life_days"].mean()
+
+    response_rows.append(row)
+
+athlete_cdf = pd.DataFrame(response_rows)
+```
+
+# CLUSTER ATHLETES INTO FIVE GROUPS
+```{python}
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
+cluster_features = [
+    "std_zscore_peak_power",
+    "min_zscore_peak_power",
+    "range_peak_power_z",
+    "pct_jumps_below_baseline",
+    "pct_low_jump_days",
+    "avg_peak_power_z_0to2_days",
+    "avg_peak_power_z_3to5_days",
+    #"zscore_peak_power_rtl",
+    #"zscore_peak_power_crtl",
+    "zscore_peak_power_trip_score",
+    "zscore_peak_power_residual",
+    #"avg_rtl",
+]
+
+cluster_model_df = athlete_cdf[["athlete_id"] + cluster_features].copy()
+
+cluster_model_df[cluster_features] = cluster_model_df[cluster_features].replace([np.inf, -np.inf], np.nan)
+
+for col in cluster_features:
+    cluster_model_df[col] = cluster_model_df[col].fillna(0)
+
+cluster_model_df[cluster_features] = cluster_model_df[cluster_features].fillna(0)
+
+scaler = StandardScaler()
+X_cluster = scaler.fit_transform(cluster_model_df[cluster_features])
+X_cluster = np.nan_to_num(X_cluster, nan=0.0, posinf=0.0, neginf=0.0)
+```
+
+```{python}
+from sklearn.metrics import silhouette_score
+
+silhouette_results = []
+for k in range(2, 15):
+    km = KMeans(n_clusters=k, random_state=42, n_init=20)
+    labels = km.fit_predict(X_cluster)
+    score = silhouette_score(X_cluster, labels)
+    silhouette_results.append({
+        "k": k,
+        "silhouette_score": score
+    })
+
+silhouette_df = pd.DataFrame(silhouette_results).sort_values(
+    "silhouette_score",
+    ascending=False)
+silhouette_df.head(5)
+```
+
+A model with five clusters was chosen because it had a relatively high silhouette score and provided more meaningful separation and interpretability than two or three clusters.
+
+```{python}
+kmeans_5 = KMeans(n_clusters=5, random_state=42, n_init=20)
+cluster_model_df["cluster_5"] = kmeans_5.fit_predict(X_cluster)
+
+cluster_model_df["cluster_5"].value_counts().sort_index()
+```
+
+```{python}
+athlete_cdf["cluster_5"] = athlete_cdf["athlete_id"].map(
+    cluster_model_df.set_index("athlete_id")["cluster_5"])
+```
+
+```{python}
+cluster_naming_df = athlete_cdf.copy()
+
+cluster_naming_df = (
+    cluster_naming_df
+    .groupby("cluster_5", as_index=False)
+    .agg(
+        pct_jumps_below_baseline=("pct_jumps_below_baseline", "mean"),
+        pct_low_jump_days=("pct_low_jump_days", "mean"),
+        std_zscore_peak_power=("std_zscore_peak_power", "mean"),
+        range_peak_power_z=("range_peak_power_z", "mean"),
+        avg_peak_power_z_0to2_days=("avg_peak_power_z_0to2_days", "mean"),
+        avg_peak_power_z_3to5_days=("avg_peak_power_z_3to5_days", "mean"),
+        avg_peak_power_z_6to7_days=("avg_peak_power_z_6to7_days", "mean")
+    )
+)
+
+cluster_naming_df["fatigue_score"] = (
+    cluster_naming_df["pct_jumps_below_baseline"]
+    + cluster_naming_df["pct_low_jump_days"]
+    + cluster_naming_df["std_zscore_peak_power"]
+    + cluster_naming_df["range_peak_power_z"]
+    - cluster_naming_df["avg_peak_power_z_0to2_days"].fillna(0)
+    - cluster_naming_df["avg_peak_power_z_3to5_days"].fillna(0)
+    - cluster_naming_df["avg_peak_power_z_6to7_days"].fillna(0)
+)
+
+ranked_clusters = (
+    cluster_naming_df
+    .sort_values("fatigue_score", ascending=False)["cluster_5"]
+    .tolist()
+)
+
+cluster_name_map = {
+    ranked_clusters[0]: "highly-sensitive",
+    ranked_clusters[1]: "sensitive",
+    ranked_clusters[2]: "moderate-response",
+    ranked_clusters[3]: "resilient",
+    ranked_clusters[4]: "highly-resilient"
+}
+
+athlete_cdf["cluster_name"] = athlete_cdf["cluster_5"].map(cluster_name_map)
+spring_cbase["cluster_5"] = spring_cbase["athlete_id"].map(
+    athlete_cdf.set_index("athlete_id")["cluster_5"]
+)
+spring_cbase["cluster_name"] = spring_cbase["cluster_5"].map(cluster_name_map)
+athlete_cdf.head(5)
+```
+
+# VALIDATE CLUSTER BEHAVIOR UNDER STRESS
+```{python}
+spring_cbase["high_rtl_flag"] = (spring_cbase["rtl"] > spring_cbase["rtl"].median()).astype(int)
+spring_cbase["high_crtl_flag"] = (spring_cbase["crtl"] > spring_cbase["crtl"].median()).astype(int)
+spring_cbase["high_trip_score_flag"] = (spring_cbase["trip_score"] > spring_cbase["trip_score"].median()).astype(int)
+
+cluster_stress_validation = (
+    spring_cbase
+    .groupby(["cluster_name", "high_trip_score_flag"], as_index=False)
+    .agg(
+        n_jumps=("date_jump", "count"),
+        avg_zscore_peak_power=("zscore_peak_power", "mean"),
+        avg_peak_power=("peak_power", "mean"),
+        pct_below_baseline=("below_baseline", "mean"),
+        pct_low_jump_days=("low_jump_flag", "mean")
+    )
+    .round(3))
+cluster_stress_validation.head(5)
+```
+
+```{python}
+cluster_rtl_validation = (
+    spring_cbase
+    .groupby(["cluster_name", "high_rtl_flag"], as_index=False)
+    .agg(
+        n_jumps=("date_jump", "count"),
+        avg_zscore_peak_power=("zscore_peak_power", "mean"),
+        pct_below_baseline=("below_baseline", "mean"),
+        pct_low_jump_days=("low_jump_flag", "mean")
+    )
+    .round(3))
+
+cluster_crtl_validation = (
+    spring_cbase
+    .groupby(["cluster_name", "high_crtl_flag"], as_index=False)
+    .agg(
+        n_jumps=("date_jump", "count"),
+        avg_zscore_peak_power=("zscore_peak_power", "mean"),
+        pct_below_baseline=("below_baseline", "mean"),
+        pct_low_jump_days=("low_jump_flag", "mean")
+    )
+    .round(3)
+)
+cluster_rtl_validation.head(5)
+```
+
+```{python}
+cluster_window_validation = (
+    athlete_cdf
+    .groupby("cluster_name", as_index=False)
+    .agg(
+        avg_peak_power_z_0to2_days=("avg_peak_power_z_0to2_days", "mean"),
+        avg_peak_power_z_3to5_days=("avg_peak_power_z_3to5_days", "mean"),
+        avg_peak_power_z_6to7_days=("avg_peak_power_z_6to7_days", "mean"),
+        std_zscore_peak_power=("std_zscore_peak_power", "mean"),
+        range_peak_power_z=("range_peak_power_z", "mean")
+    )
+    .round(3))
+cluster_window_validation.head(5)
+```
+
+```{python}
+# sanity check
+fatigue_rank = (
+    cluster_naming_df[["cluster_5", "fatigue_score"]]
+    .sort_values("fatigue_score", ascending=False)
+    .assign(fatigue_rank=lambda d: range(1, len(d) + 1)))
+
+cluster_avg_measures = (
+    athlete_cdf
+    .groupby(["cluster_5", "cluster_name"], as_index=False)
+    .agg(
+        n_athletes=("athlete_id", "nunique"),
+        avg_zscore_peak_power=("avg_zscore_peak_power", "mean"),
+        std_zscore_peak_power=("std_zscore_peak_power", "mean"),
+        min_zscore_peak_power=("min_zscore_peak_power", "mean"),
+        pct_jumps_below_baseline=("pct_jumps_below_baseline", "mean"),
+        pct_low_jump_days=("pct_low_jump_days", "mean"),
+        avg_peak_power_z_0to2_days=("avg_peak_power_z_0to2_days", "mean"),
+        avg_peak_power_z_3to5_days=("avg_peak_power_z_3to5_days", "mean"),
+        avg_peak_power_z_6to7_days=("avg_peak_power_z_6to7_days", "mean"),
+        avg_rtl=("avg_rtl", "mean"),
+        avg_crtl=("avg_crtl", "mean"),
+        avg_trip_score=("avg_trip_score", "mean"),
+        avg_residual=("avg_residual", "mean")
+    )
+    .merge(fatigue_rank, on="cluster_5", how="left")
+    .sort_values(["fatigue_rank", "fatigue_score"], ascending=[True, False])
+    .round(3))
+cluster_avg_measures.head(5)
+```
+
+The clusters seem appropriate, given that the "highly-resilient" group has the lowest fatigue score and highest average peak power z-scores.
+
+```{python}
+# save final athlete cluster dataset
+final_cluster_df = athlete_cdf[[
+    "athlete_id",
+    "cluster_5",
+    "cluster_name"
+] + cluster_features].copy()
+
+final_cluster_df = final_cluster_df.rename(columns={
+    "cluster_5": "cluster_number",
+    "cluster_name": "cluster_label"})
+final_cluster_df.head(5)
+```
+
+# BUILD XGBOOST MODEL WITH RTL AND CRTL
+```{python}
+# baseline predictive model with leave-one-athlete-out cross-validation to predict zscore_peak_power with rtl and crtl
+from xgboost import XGBRegressor
+from sklearn.model_selection import LeaveOneGroupOut
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+xgb_model_vars = [
+    "rtl",
+    "crtl",
+    "trip_score",
+    "residual",
+    "half_life_days",
+    "travel_time",
+    "total_distance_from_home",
+    "connections",
+    "commercial_flight_there",
+    "commercial_flight_home",
+    "practice_at_away_site",
+    "turnaround_time",
+    "circadian_score",
+    "travel_load_score",
+    "logistics_score",
+    "travel_density_score",
+    "days_since_travel"
+]
+
+xgb_model_df = spring_cbase[
+    ["athlete_id", "date_jump", "zscore_peak_power", "peak_power"] + xgb_model_vars
+].copy()
+
+xgb_model_df = xgb_model_df[xgb_model_df["zscore_peak_power"].notna()].copy()
+
+for col in xgb_model_vars:
+    xgb_model_df[col] = xgb_model_df[col].replace([np.inf, -np.inf], np.nan)
+    xgb_model_df[col] = xgb_model_df[col].fillna(0)
+
+xgb_model_df[xgb_model_vars] = xgb_model_df[xgb_model_vars].fillna(0)
+
+X_xgb = xgb_model_df[xgb_model_vars]
+y_xgb = xgb_model_df["zscore_peak_power"]
+xgb_groups = xgb_model_df["athlete_id"]
+
+xgb_logo = LeaveOneGroupOut()
+
+xgb_pred_rows = []
+
+for train_idx, test_idx in xgb_logo.split(X_xgb, y_xgb, groups=xgb_groups):
+    X_train = X_xgb.iloc[train_idx]
+    X_test = X_xgb.iloc[test_idx]
+    y_train = y_xgb.iloc[train_idx]
+    y_test = y_xgb.iloc[test_idx]
+
+    xgb_model = XGBRegressor(
+        n_estimators=200,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        objective="reg:squarederror"
+    )
+
+    xgb_model.fit(X_train, y_train)
+    y_pred = xgb_model.predict(X_test)
+
+    fold_df = xgb_model_df.iloc[test_idx][["athlete_id", "date_jump", "zscore_peak_power", "peak_power"]].copy()
+    fold_df["pred_zscore_peak_power"] = y_pred
+    xgb_pred_rows.append(fold_df)
+
+xgb_pred_results = pd.concat(xgb_pred_rows, ignore_index=True)
+
+rmse_xgb = np.sqrt(mean_squared_error(xgb_pred_results["zscore_peak_power"], xgb_pred_results["pred_zscore_peak_power"]))
+mae_xgb = mean_absolute_error(xgb_pred_results["zscore_peak_power"], xgb_pred_results["pred_zscore_peak_power"])
+r2_xgb = r2_score(xgb_pred_results["zscore_peak_power"], xgb_pred_results["pred_zscore_peak_power"])
+
+print("XGBoost LOAO RMSE:", round(rmse_xgb, 3))
+print("XGBoost LOAO MAE:", round(mae_xgb, 3))
+print("XGBoost LOAO R^2:", round(r2_xgb, 3))
+xgb_pred_results.head(5)
+```
+
+```{python}
+# fit model for variable importance
+xgb_model_final = XGBRegressor(
+    n_estimators=200,
+    max_depth=3,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42,
+    objective="reg:squarederror"
+)
+
+xgb_model_final.fit(X_xgb, y_xgb)
+
+importance_df = pd.DataFrame({
+    "variable": xgb_model_vars,
+    "importance": xgb_model_final.feature_importances_
+}).sort_values("importance", ascending=False)
+importance_df.head(15)
+```
+
+# BUILD XGBOOST MODEL WITHOUT RTL AND CRTL
+```{python}
+# predictive model without rtl/crtl
+xgb_model_vars_no_rtl = [
+    "trip_score",
+    "residual",
+    "half_life_days",
+    "travel_time",
+    "total_distance_from_home",
+    "connections",
+    "commercial_flight_there",
+    "commercial_flight_home",
+    "practice_at_away_site",
+    "turnaround_time",
+    "circadian_score",
+    "travel_load_score",
+    "logistics_score",
+    "travel_density_score",
+    "days_since_travel"]
+
+xgb_model_df_no_rtl = spring_cbase[
+    ["athlete_id", "date_jump", "zscore_peak_power", "peak_power"] + xgb_model_vars_no_rtl
+].copy()
+
+xgb_model_df_no_rtl = xgb_model_df_no_rtl[xgb_model_df_no_rtl["zscore_peak_power"].notna()].copy()
+
+for col in xgb_model_vars_no_rtl:
+    xgb_model_df_no_rtl[col] = xgb_model_df_no_rtl[col].replace([np.inf, -np.inf], np.nan)
+    xgb_model_df_no_rtl[col] = xgb_model_df_no_rtl[col].fillna(0)
+
+xgb_model_df_no_rtl[xgb_model_vars_no_rtl] = xgb_model_df_no_rtl[xgb_model_vars_no_rtl].fillna(0)
+
+X_xgb_no_rtl = xgb_model_df_no_rtl[xgb_model_vars_no_rtl]
+y_xgb_no_rtl = xgb_model_df_no_rtl["zscore_peak_power"]
+xgb_groups_no_rtl = xgb_model_df_no_rtl["athlete_id"]
+
+xgb_logo_no_rtl = LeaveOneGroupOut()
+
+xgb_pred_rows_no_rtl = []
+
+for train_idx, test_idx in xgb_logo_no_rtl.split(X_xgb_no_rtl, y_xgb_no_rtl, groups=xgb_groups_no_rtl):
+    X_train_no_rtl = X_xgb_no_rtl.iloc[train_idx]
+    X_test_no_rtl = X_xgb_no_rtl.iloc[test_idx]
+    y_train_no_rtl = y_xgb_no_rtl.iloc[train_idx]
+    y_test_no_rtl = y_xgb_no_rtl.iloc[test_idx]
+
+    xgb_model_no_rtl = XGBRegressor(
+        n_estimators=200,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        objective="reg:squarederror"
+    )
+
+    xgb_model_no_rtl.fit(X_train_no_rtl, y_train_no_rtl)
+    y_pred_no_rtl = xgb_model_no_rtl.predict(X_test_no_rtl)
+
+    fold_df_no_rtl = xgb_model_df_no_rtl.iloc[test_idx][["athlete_id", "date_jump", "zscore_peak_power", "peak_power"]].copy()
+    fold_df_no_rtl["pred_zscore_peak_power"] = y_pred_no_rtl
+    xgb_pred_rows_no_rtl.append(fold_df_no_rtl)
+
+xgb_pred_results_no_rtl = pd.concat(xgb_pred_rows_no_rtl, ignore_index=True)
+
+rmse_xgb_no_rtl = np.sqrt(mean_squared_error(xgb_pred_results_no_rtl["zscore_peak_power"], xgb_pred_results_no_rtl["pred_zscore_peak_power"]))
+mae_xgb_no_rtl = mean_absolute_error(xgb_pred_results_no_rtl["zscore_peak_power"], xgb_pred_results_no_rtl["pred_zscore_peak_power"])
+r2_xgb_no_rtl = r2_score(xgb_pred_results_no_rtl["zscore_peak_power"], xgb_pred_results_no_rtl["pred_zscore_peak_power"])
+
+print("XGBoost LOAO RMSE (no RTL/CRTL):", round(rmse_xgb_no_rtl, 3))
+print("XGBoost LOAO MAE (no RTL/CRTL):", round(mae_xgb_no_rtl, 3))
+print("XGBoost LOAO R^2 (no RTL/CRTL):", round(r2_xgb_no_rtl, 3))
+xgb_pred_results_no_rtl.head(5)
+```
+
+```{python}
+# fit model for variable importance
+xgb_model_final_no_rtl = XGBRegressor(
+    n_estimators=200,
+    max_depth=3,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42,
+    objective="reg:squarederror")
+
+xgb_model_final_no_rtl.fit(X_xgb_no_rtl, y_xgb_no_rtl)
+
+importance_df_no_rtl = pd.DataFrame({
+    "variable": xgb_model_vars_no_rtl,
+    "importance": xgb_model_final_no_rtl.feature_importances_
+}).sort_values("importance", ascending=False)
+importance_df_no_rtl.head(15)
+```
+
+```{python}
+comparison_df = pd.DataFrame({
+    "model": [
+        "Random Forest with RTL/CRTL",
+        "Random Forest without RTL/CRTL",
+        "XGBoost with RTL/CRTL",
+        "XGBoost without RTL/CRTL"
+    ],
+    "rmse": [rmse_rf, rmse_rf_no_rtl, rmse_xgb, rmse_xgb_no_rtl],
+    "mae": [mae_rf, mae_rf_no_rtl, mae_xgb, mae_xgb_no_rtl],
+    "r2": [r2_rf, r2_rf_no_rtl, r2_xgb, r2_xgb_no_rtl]
+}).sort_values("rmse", ascending=True).reset_index(drop=True)
+comparison_df
+```
+
+# CREATE FEATURE IMPORTANCE PLOT FOR XGBOOST MODEL WITH RTL AND CRTL
+```{python}
+import matplotlib.pyplot as plt
+import pandas as pd
+
+xgb_importance_plot_df = pd.DataFrame({
+    "variable": xgb_model_vars,
+    "importance": xgb_model_final.feature_importances_
+}).sort_values("importance", ascending=True)
+
+plt.figure(figsize=(10, 7))
+plt.barh(xgb_importance_plot_df["variable"], xgb_importance_plot_df["importance"])
+plt.xlabel("Feature Importance")
+plt.ylabel("Variable")
+plt.title("XGBoost Feature Importance for Predicting zscore_peak_power")
+plt.tight_layout()
+plt.show()
+```
+
+# PREDICT VALUES FOR FUTURE GAMES THIS SEASON
+```{python}
+# keep only future trips
+# html saved on April 21, 2026, so "future" is anything after that date
+today = pd.Timestamp.today().normalize()
+future_trips = final_df[final_df["travel_date_home"] > today].copy()
+
+# forecast rtl and crtl through the rest of the season (uses existing compute_rtl)
+all_trips = final_df.copy()  # past and future already scored
+forecast_daily = compute_rtl(all_trips)
+forecast_daily = compute_crtl(forecast_daily)
+forecast_daily["rtl_category"]  = forecast_daily["rtl"].apply(assign_rtl_category)
+forecast_daily["crtl_category"] = forecast_daily["crtl"].apply(assign_crtl_category)
+
+# flag high-risk future game windows
+future_flags = forecast_daily[
+    (forecast_daily["game_date"] > today) &
+    (forecast_daily["rtl_category"].isin(["High", "Very High"]) |
+     forecast_daily["crtl_category"].isin(["High", "Very High"]))
+].sort_values("game_date")
+
+# athlete and future-game risk matrix: expected z-score drop per cluster
+cluster_response = (
+    spring_cbase.groupby("cluster_name")["zscore_peak_power"].mean().to_dict()
+)
+athlete_risk = athlete_cdf[["athlete_id", "cluster_name"]].assign(
+    expected_zscore_response=lambda d: d["cluster_name"].map(cluster_response)
+)
+
+# cross-join for the staff-facing dashboard
+future_risk_matrix = future_flags.merge(athlete_risk, how="cross")
+future_risk_matrix["flag"] = np.where(
+    (future_risk_matrix["rtl_category"].isin(["High", "Very High"])) &
+    (future_risk_matrix["cluster_name"].isin(["highly-sensitive", "sensitive"])),
+    "MONITOR", "ok"
+)
+future_risk_matrix.head(5)
+```
+
+# CREATE VISUALIZATION OF CLUSTER RESPONSE PROFILES AND FUTURE GAME RISKS
+```{python}
+import seaborn as sns
+target_date = pd.Timestamp("2026-04-22")
+april22 = (
+    future_risk_matrix.loc[
+        future_risk_matrix["game_date"].eq(target_date),
+        [
+            "athlete_id",
+            "cluster_name",
+            "expected_zscore_response",
+            "flag",
+            "rtl",
+            "crtl",
+            "rtl_category",
+            "crtl_category"
+        ]
+    ]
+    .rename(columns={"expected_zscore_response": "pred_zscore_response"})
+    .sort_values("pred_zscore_response")
+)
+
+if april22.empty:
+    print(f"No future-risk rows found for {target_date.date()}.")
+else:
+    print(
+        f"{target_date.date()} | RTL={april22['rtl'].iloc[0]:.2f} ({april22['rtl_category'].iloc[0]}), "
+        f"CRTL={april22['crtl'].iloc[0]:.2f} ({april22['crtl_category'].iloc[0]})"
+    )
+
+    cluster_order = [
+        "highly-sensitive",
+        "sensitive",
+        "moderate-response",
+        "resilient",
+        "highly-resilient"
+    ]
+
+    cluster_plot_df = (
+        april22.groupby("cluster_name", as_index=False)["pred_zscore_response"]
+        .mean()
+    )
+    cluster_plot_df["response_sign"] = np.where(
+        cluster_plot_df["pred_zscore_response"] < 0,
+        "Negative",
+        "Positive"
+    )
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(
+        data=cluster_plot_df,
+        x="cluster_name",
+        y="pred_zscore_response",
+        order=cluster_order,
+        hue="response_sign",
+        dodge=False,
+        palette={"Negative": "#D62728", "Positive": "#2E8B57"}
+    )
+    plt.axhline(0, linestyle="--", linewidth=1, color="black", alpha=0.6)
+    plt.title(f"Predicted Z-Score Response on {target_date.date()}")
+    plt.xlabel("Cluster Group")
+    plt.ylabel("Predicted Z-Score Response")
+    plt.legend(title="Response Sign")
+    plt.xticks(rotation=20, ha="right")
+    plt.tight_layout()
+    plt.show()
+
+    april22[["athlete_id", "cluster_name", "pred_zscore_response", "flag"]]
 ```
