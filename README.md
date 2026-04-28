@@ -148,10 +148,11 @@ These results suggest that short-term recovery disruption plays a larger role th
 ---
 ## Repository Structure
 - Quarto file containing full code (`sb_analysis.qmd`)
+  - Note that jump file cannot be uploaded for privacy purposes
 - HTML file containing code and output (`sb_analysis.html`)
 - Dataset with travel information (`project_data.xlsx`)
 - Report with findings (`04.30_final_report.docx`)
-- Presentation with findings (`04.30_final_report.docx`)
+- Presentation with findings (`04.30_final_report.pptx`)
 
 ---
 ## Conclusion
