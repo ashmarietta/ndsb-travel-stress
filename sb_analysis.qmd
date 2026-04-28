@@ -230,6 +230,8 @@ df2.head(5)
 
 ## IMPORT TRAVEL LOGISTICS DATA
 ```{python}
+import pandas as pd
+from datetime import datetime
 excel_path = 'project_data.xlsx'
 df_sb = pd.read_excel(excel_path,sheet_name="NDSB")
 df_sb_travel = df_sb[
